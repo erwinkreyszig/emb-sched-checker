@@ -7,6 +7,7 @@ from zoneinfo import ZoneInfo
 
 from dotenv import load_dotenv
 from selenium import webdriver
+from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.wait import WebDriverWait
@@ -71,13 +72,17 @@ def get_captcha_response(client, channel_id: str, mentions_list: list) -> str | 
     return message["text"]
 
 
-def go_to_page_before_captcha(driver):
-    try:
-        continue_href = WebDriverWait(driver, 10).until(
-            EC.presence_of_element_located((By.XPATH, XPATH_TO_CONTINUE_LINK))
-        )
-    except Exception:
-        return None
+def go_to_page_before_captcha(driver, headless=False):
+    if headless:
+        driver.implicitly_wait(randrange(6, 10))
+        continue_href = driver.find_element(By.XPATH, XPATH_TO_CONTINUE_LINK)
+    else:
+        try:
+            continue_href = WebDriverWait(driver, 10).until(
+                EC.presence_of_element_located((By.XPATH, XPATH_TO_CONTINUE_LINK))
+            )
+        except Exception:
+            return None
     continue_href.click()
     return driver
 
@@ -92,10 +97,10 @@ def wait_for_calendar_page(driver):
     return driver
 
 
-def get_screenshot(driver, now: datetime):
+def get_screenshot(driver, now: datetime, zoom_percent=200):
     now_str = now.astimezone(ZoneInfo("Asia/Tokyo")).strftime("%d%b%Y_%H%M%S")
     filename = f"{now_str}.png"
-    driver.execute_script("document.body.style.zoom='200%'")
+    driver.execute_script(f"document.body.style.zoom='{zoom_percent}%'")
     driver.save_screenshot(filename)
     return driver, filename
 
@@ -106,6 +111,16 @@ def enter_captcha_and_proceed(driver, captcha_value: str):
     delay_x_seconds(sec=randrange(3, 7))
     captcha_submit_button = driver.find_element(By.XPATH, XPATH_TO_CAPTCHA_SUBMIT)
     captcha_submit_button.click()
+    return driver
+
+
+def set_up_driver(headless=False, width=1024, height=1024):
+    chrome_options = Options()
+    if headless:
+        chrome_options.add_argument("--headless")
+    chrome_options.add_argument(f"window-size={width}x{height}")
+    driver = webdriver.Chrome(options=chrome_options)
+    driver.set_window_size(width, height)
     return driver
 
 
@@ -135,11 +150,12 @@ def main():
     recipients = split_slack_ids(SLACK_IDS)
     logger.info(f"Slack mentions: {recipients}")
     user_mentions = generate_mentions(recipients)
-    driver = webdriver.Chrome()
+    is_headless = False
+    driver = set_up_driver(headless=is_headless)
     logger.info("Chrome driver initialized")
     driver.get(URL)
     logger.info(f"Navigated to {URL}")
-    driver = go_to_page_before_captcha(driver)
+    driver = go_to_page_before_captcha(driver, headless=is_headless)
     logger.info("Now on captcha page")
     if driver is None:
         message = f"{user_mentions} Failed to go to page before captcha"
