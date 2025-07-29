@@ -26,7 +26,7 @@ SLACK_IDS = os.getenv("SLACK_IDS")
 REPLY_WAIT_TIME = int(os.getenv("REPLY_WAIT_TIME_SECONDS"))
 CHECK_REPLY_EVERY = int(os.getenv("CHECK_REPLY_EVERY_SECONDS"))
 
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
 logger = logging.getLogger(__name__)
 
 
@@ -72,27 +72,31 @@ def get_captcha_response(client, channel_id: str, mentions_list: list) -> str | 
     return message["text"]
 
 
-def go_to_page_before_captcha(driver, headless=False):
+def go_to_page_before_captcha_and_click_continue(
+    driver, max_wait_seconds=15, headless=False
+):
     if headless:
-        driver.implicitly_wait(randrange(6, 10))
+        driver.implicitly_wait(randrange(6, max_wait_seconds))
         continue_href = driver.find_element(By.XPATH, XPATH_TO_CONTINUE_LINK)
     else:
         try:
-            continue_href = WebDriverWait(driver, 10).until(
+            continue_href = WebDriverWait(driver, max_wait_seconds).until(
                 EC.presence_of_element_located((By.XPATH, XPATH_TO_CONTINUE_LINK))
             )
+            continue_href.click()
         except Exception:
+            driver.close()
             return None
-    continue_href.click()
     return driver
 
 
-def wait_for_calendar_page(driver):
+def wait_for_calendar_page(driver, max_wait_seconds=15):
     try:
-        calendar_right_button = WebDriverWait(driver, 10).until(
+        calendar_right_button = WebDriverWait(driver, max_wait_seconds).until(
             EC.presence_of_element_located((By.XPATH, XPATH_TO_CALENDAR_BUTTON))
         )
     except Exception:
+        driver.close()
         return None
     return driver
 
@@ -112,6 +116,11 @@ def enter_captcha_and_proceed(driver, captcha_value: str):
     captcha_submit_button = driver.find_element(By.XPATH, XPATH_TO_CAPTCHA_SUBMIT)
     captcha_submit_button.click()
     return driver
+
+
+def click_button_for_next_calendar_page(driver):
+    next_arrow = driver.find_element(By.XPATH, XPATH_TO_CALENDAR_BUTTON)
+    next_arrow.click()
 
 
 def set_up_driver(headless=False, width=1024, height=1024):
@@ -141,7 +150,7 @@ def delete_files(filenames):
     return list(set(filenames) - set(removed))
 
 
-def main():
+def main(is_headless=False):
     logger.info(
         f"Config: will check every {CHECK_REPLY_EVERY}s in {REPLY_WAIT_TIME}s for a reply"
     )
@@ -150,15 +159,14 @@ def main():
     recipients = split_slack_ids(SLACK_IDS)
     logger.info(f"Slack mentions: {recipients}")
     user_mentions = generate_mentions(recipients)
-    is_headless = False
     driver = set_up_driver(headless=is_headless)
     logger.info("Chrome driver initialized")
     driver.get(URL)
     logger.info(f"Navigated to {URL}")
-    driver = go_to_page_before_captcha(driver, headless=is_headless)
+    driver = go_to_page_before_captcha_and_click_continue(driver, headless=is_headless)
     logger.info("Now on captcha page")
     if driver is None:
-        message = f"{user_mentions} Failed to go to page before captcha"
+        message = f"{user_mentions} Failed to go to captcha page"
         send_slack_message(client, channel_id=SLACK_CHANNEL, message=message)
         return
 
@@ -193,6 +201,10 @@ def main():
 
     logger.info("Waiting for calendar page")
     driver = wait_for_calendar_page(driver)
+    if not driver:
+        message = f"{user_mentions} Could not go to calendar page"
+        send_slack_message(client, channel_id=SLACK_CHANNEL, message=message)
+        return
 
     driver, calendar_filename = get_screenshot(driver, datetime.now())
     logger.info("Calendar screenshot taken")
@@ -202,8 +214,23 @@ def main():
         filename=calendar_filename,
         comment=user_mentions,
     )
+
+    click_button_for_next_calendar_page(driver)
+    sleep(15)  # fingers crossed
+
+    driver, calendar_second_page_filename = get_screenshot(driver, datetime.now())
+    logger.info("Second claendar page screenshot taken")
+    send_slack_photo(
+        client,
+        channel_id=SLACK_CHANNEL,
+        filename=calendar_second_page_filename,
+        comment=user_mentions,
+    )
+
     logger.info("Calendar screenshot sent, cleaning up used image files")
-    not_deleted_files = delete_files([captcha_filename, calendar_filename])
+    not_deleted_files = delete_files(
+        [captcha_filename, calendar_filename, calendar_second_page_filename]
+    )
     if not_deleted_files:
         message = f"These files were not deleted: {', '.join(not_deleted_files)}"
         send_slack_message(client, channel_id=SLACK_CHANNEL, message=message)
